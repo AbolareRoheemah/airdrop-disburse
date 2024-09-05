@@ -5,11 +5,11 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract Airdrop {
-    address owner;
-    IERC20 immutable tokenAddress;
-    bytes32 merkleRoot;
+    address public owner;
+    IERC20 public immutable tokenAddress;
+    bytes32 public merkleRoot;
     
-    mapping (address => bool) claimed;
+    mapping (address => bool) public claimed;
 
     event ClaimSuccessful(address, uint);
     constructor(address _tokenAddress, bytes32 _merkleRoot) {
