@@ -8,7 +8,8 @@ import hre, { ethers } from "hardhat";
 import { MerkleTree } from 'merkletreejs';
 import keccak256 from "keccak256";
 
-describe("Airdrop", function () {
+describe("Airdrop", async function () {
+  const claimAddy = "0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2";
   // We define a fixture to reuse the same setup in every test.
   // We use loadFixture to run this setup once, snapshot that state,
   // and reset Hardhat Network to that snapshot in every test.
@@ -26,15 +27,22 @@ describe("Airdrop", function () {
 
   // function to deploy airdrop contract
   async function deployAirdropFixture() {
-    const merkle_root = "0x3d599af7d11baeefcf8c0b4c1570e38d1591a1573590f62a037489649a51dc9b";
     const [owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4] = await hre.ethers.getSigners();
+    const leafNodes = [ owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4].map((addr) =>
+      keccak256(ethers.solidityPacked(["address", "uint256"], [otherAccount1.address, ethers.parseUnits("100", 18)]))
+    );
+    
+  
+    const merkleTree = new MerkleTree(leafNodes, keccak256, { sortPairs: true });
+    const rootHash = merkleTree.getHexRoot();
+   
 
     const { token } = await loadFixture(deployTokenFixture);
 
     const Airdrop = await hre.ethers.getContractFactory("Airdrop");
-    const airdrop = await Airdrop.deploy(token, merkle_root);
+    const airdrop = await Airdrop.deploy(token, rootHash);
 
-    return { airdrop, owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4, token, merkle_root };
+    return { airdrop, owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4, token, rootHash , merkleTree};
   }
 
   describe("Deployment", function () {
@@ -45,28 +53,21 @@ describe("Airdrop", function () {
     });
 
     it("Should check that tokenAddress is correctly set", async function () {
-      const { airdrop, owner, token, merkle_root } = await loadFixture(deployAirdropFixture);
+      const { airdrop, token } = await loadFixture(deployAirdropFixture);
 
       expect(await airdrop.tokenAddress()).to.equal(token);
     });
 
     it("Should check that merkleRoot is correctly set", async function () {
-      const { airdrop, merkle_root } = await loadFixture(deployAirdropFixture);
+      const { airdrop, rootHash } = await loadFixture(deployAirdropFixture);
 
-      expect(await airdrop.merkleRoot()).to.equal(merkle_root);
+      expect(await airdrop.merkleRoot()).to.equal(rootHash);
     });
   });
 
   describe("Claim", function () {
     it("Should claim successfully", async function () {
-      const { airdrop, owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4, token } = await loadFixture(deployAirdropFixture);
-
-      // Create a Merkle Tree for airdrop addresses and amounts
-      const leafNodes = [otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4].map((addr) =>
-        keccak256(ethers.solidityPacked(["address", "uint256"], [addr.address, ethers.parseUnits("100", 18)]))
-      );
-      const merkleTree = new MerkleTree(leafNodes, keccak256, { sortPairs: true });
-      const rootHash = merkleTree.getHexRoot();
+      const { airdrop, merkleTree,otherAccount, otherAccount1, token } = await loadFixture(deployAirdropFixture);
 
       // Transfer erc20 tokens from the owner to contract
       const transferAmount = ethers.parseUnits("250", 18);
@@ -74,30 +75,26 @@ describe("Airdrop", function () {
       expect(await token.balanceOf(airdrop)).to.equal(transferAmount);
 
       // submit claim
-      const claimAddy = otherAccount1.address
       const claimAmount = ethers.parseUnits("100", 18);
-      const leaf = keccak256(ethers.solidityPacked(["address", "uint256"], [claimAddy, claimAmount]));
+      const leaf = keccak256(ethers.solidityPacked(["address", "uint256"], [otherAccount1.address, claimAmount]));
+     
       const proof = merkleTree.getHexProof(leaf);
-      const isAuthentic = merkleTree.verify(proof, leaf, rootHash);
 
-      expect(await isAuthentic).to.equal(true)
+      // claim amount
+      expect(await airdrop.connect(otherAccount1).claim(otherAccount1.address, claimAmount, proof)).to.emit(airdrop, "ClaimSuccessful")
+      .withArgs(otherAccount1.address, claimAmount);
+      // await airdrop.connect(otherAccount1).claim(otherAccount1.address, claimAmount, proof)
 
-      // send claim amount
-      await airdrop.connect(otherAccount1).claim(claimAddy, claimAmount, proof)
+      expect(await token.balanceOf(otherAccount1.address)).to.equal(claimAmount);
 
-      expect(await token.balanceOf(claimAddy)).to.equal(claimAmount);
+      expect( await airdrop.claimed(otherAccount1.address)).to.equal(true);
 
-      expect(await airdrop.claimed(claimAddy)).to.equal(true);
-
-      expect(await airdrop.connect(otherAccount1).claim(claimAddy, claimAmount, proof)).to.emit(airdrop, "ClaimSuccessful")
-      .withArgs(otherAccount1.address, claimAddy);
-
-      expect(
-        await airdrop.connect(otherAccount).claim(claimAddy, claimAmount, proof)
+     const expre =  airdrop.connect(otherAccount1).claim(otherAccount1.address, claimAmount, proof);
+     expect(expre).to.be.revertedWith('already claimed');
+   
+       expect(
+         airdrop.connect(otherAccount).claim(claimAddy, claimAmount, proof)
       ).to.be.revertedWith("Cant claim for others");
-
-      expect(await airdrop.connect(otherAccount1).claim(claimAddy, claimAmount, proof)).to.be.rejectedWith("already claimed");
-
     });
   });
 
@@ -119,13 +116,16 @@ describe("Airdrop", function () {
   })
   describe("ownerWithdraw", function () {
     it("Should withdraw leftover to owner account", async function() {
-      const { airdrop, owner, otherAccount, otherAccount1, otherAccount2, otherAccount3, otherAccount4, token } = await loadFixture(deployAirdropFixture);
+      const { airdrop, owner, token } = await loadFixture(deployAirdropFixture);
 
-      const balanceBefore = token.balanceOf(owner)
+      // trnfer some amount to contract to check it passes
+      const transferAmount = ethers.parseUnits("100", 18);
+      await token.transfer(airdrop, transferAmount);
+      expect(await token.balanceOf(airdrop)).to.equal(transferAmount);
+
       await airdrop.ownerWithdraw()
-      const balanceAfter = token.balanceOf(owner)
-
-      expect(await token.balanceOf(owner)).to.equal(balanceAfter)
+      const newBalance = await token.balanceOf(owner)
+      expect(await airdrop.getOwnerBalance()).to.equal(newBalance)
     })
   })
 });

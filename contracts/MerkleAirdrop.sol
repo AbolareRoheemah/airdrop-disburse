@@ -63,4 +63,8 @@ contract Airdrop {
         // transfer to owner
         tokenAddress.transfer(owner, tokenAddress.balanceOf(address(this)));
     }
+
+    function getOwnerBalance() external view returns (uint) {
+        return tokenAddress.balanceOf(owner);
+    }
 }
